@@ -51,13 +51,14 @@ def clip_out(c: Clip, publish_summary: dict | None = None) -> dict:
     }
 
 
-def video_out(v: Video, clip_count: int = 0, ready_count: int = 0, task: Task | None = None) -> dict:
+def video_out(v: Video, clip_count: int = 0, ready_count: int = 0, task: Task | None = None,
+              thumb_url: str | None = None) -> dict:
     return {
         "id": v.id, "title": v.title, "source_type": v.source_type, "source_url": v.source_url,
         "filename": v.filename, "duration": v.duration, "width": v.width, "height": v.height, "fps": v.fps,
         "size_bytes": v.size_bytes, "language": v.language, "status": v.status, "stage": v.stage,
         "progress": v.progress, "error": v.error, "clip_count": clip_count, "ready_clip_count": ready_count,
-        "source_url_media": media_url(v.path), "task": task_out(task),
+        "source_url_media": media_url(v.path), "task": task_out(task), "thumb_url": thumb_url,
         "created_at": iso(v.created_at), "updated_at": iso(v.updated_at),
     }
 

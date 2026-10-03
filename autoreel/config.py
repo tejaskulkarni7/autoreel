@@ -149,7 +149,7 @@ class SubtitleConfig(BaseModel):
     # Hook/title card shown at the top for the first seconds of the clip.
     hook_enabled: bool = True
     hook_seconds: float = 3.0
-    hook_font_size: int = 64
+    hook_font_size: int = 72
     hook_text_color: str = "#000000"
     hook_box_color: str = "#FFFFFF"
 

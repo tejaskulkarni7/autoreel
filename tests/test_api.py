@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autoreel.config import SECRET_MASK
-from autoreel.db import Account, Clip, PublishJob, Task, Video, session_scope, select
+from autoreel.db import Account, Clip, PublishJob, Task, Video, select, session_scope
 
 
 @pytest.fixture

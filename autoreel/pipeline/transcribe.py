@@ -46,7 +46,16 @@ def transcribe(
 
     device, compute = resolve_device(cfg)
     log.info("Loading whisper model %s on %s (%s)", cfg.model, device, compute)
-    model = WhisperModel(cfg.model, device=device, compute_type=compute, download_root=str(models_dir))
+    try:
+        model = WhisperModel(cfg.model, device=device, compute_type=compute, download_root=str(models_dir))
+    except Exception as e:
+        if Path(cfg.model).exists():
+            raise
+        raise RuntimeError(
+            f"Could not load Whisper model '{cfg.model}' ({e.__class__.__name__}: {e}). The first run downloads it "
+            "from huggingface.co - check your internet connection, or set Settings -> Transcription -> Model to "
+            "a local faster-whisper model folder."
+        ) from e
     segments_iter, info = model.transcribe(
         str(audio_path),
         language=cfg.language or None,

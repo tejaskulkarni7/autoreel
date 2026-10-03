@@ -14,7 +14,7 @@ from ..config import get_server_settings
 from ..db import Clip, PublishJob, Task, Video, get_session, utcnow
 from ..pipeline.media import MediaError, probe
 from ..pipeline.transcribe import load_transcript
-from .common import active_task, clip_out, enqueue, get_or_404, iso, latest_task, video_out
+from .common import active_task, clip_out, enqueue, get_or_404, iso, latest_task, media_url, video_out
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/videos", tags=["videos"])
@@ -42,7 +42,11 @@ def list_videos(session: Session = Depends(get_session)):
     counts = dict(session.exec(select(Clip.video_id, func.count(Clip.id)).group_by(Clip.video_id)).all())
     ready = dict(session.exec(select(Clip.video_id, func.count(Clip.id)).where(Clip.status == "ready")
                               .group_by(Clip.video_id)).all())
-    return [video_out(v, counts.get(v.id, 0), ready.get(v.id, 0), latest_task(session, v.id)) for v in videos]
+    thumbs: dict[str, str | None] = {}
+    for c in session.exec(select(Clip).where(Clip.status == "ready").order_by(Clip.rank.desc())).all():
+        thumbs[c.video_id] = media_url(c.thumb_path, c.render_version)  # lowest rank wins
+    return [video_out(v, counts.get(v.id, 0), ready.get(v.id, 0), latest_task(session, v.id), thumbs.get(v.id))
+            for v in videos]
 
 
 def _new_video_dir(video_id: str) -> Path:

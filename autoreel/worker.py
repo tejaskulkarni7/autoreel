@@ -220,7 +220,8 @@ def execute_publish_job(job_id: str) -> None:
         log.exception("publish job %s crashed", job_id)
         retry = attempts < MAX_AUTO_ATTEMPTS
         update_row(PublishJob, job_id, status="scheduled" if retry else "failed", attempts=attempts,
-                   error=f"{e.__class__.__name__}: {e}"[:2000],
+                   error=f"{e.__class__.__name__}: {e}"[:2000]
+                   + (f" (auto-retry {attempts}/{MAX_AUTO_ATTEMPTS - 1})" if retry else ""),
                    scheduled_at=utcnow() + RETRY_DELAY if retry else job.scheduled_at)
         return
     update_row(PublishJob, job_id, status="published", attempts=attempts, external_id=result.external_id,
