@@ -33,6 +33,10 @@ class ServerSettings(BaseSettings):
     # Public URL where this app is reachable (e.g. a Cloudflare tunnel). Only needed for
     # TikTok's HTTPS OAuth redirect and Instagram "video_url" uploads.
     public_base_url: str = ""
+    # Reverse proxies whose X-Forwarded-* headers are trusted ("*" inside docker-compose behind Caddy).
+    forwarded_allow_ips: str = "127.0.0.1"
+    # Escape hatch to listen on a public interface without a password (not recommended).
+    allow_no_auth: bool = False
     # Where the built React app lives.
     frontend_dist: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -83,19 +87,28 @@ class TranscriptionConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["anthropic", "openai_compatible"] = "anthropic"
+    provider: Literal["anthropic", "ollama", "openai_compatible"] = "anthropic"
     # Anthropic
     anthropic_model: str = "claude-opus-5-5"
     anthropic_api_key: str = ""  # empty -> ANTHROPIC_API_KEY env / `ant auth login` profile
     anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
-    # OpenAI-compatible server: Ollama, LM Studio, vLLM, llama.cpp, OpenAI, OpenRouter, Groq...
-    openai_base_url: str = "http://localhost:11434/v1"
-    openai_model: str = "qwen2.5:14b-instruct"
-    openai_api_key: str = ""  # Ollama ignores it; OPENAI_API_KEY env is used when empty
+    # Ollama (native API, so we can set the context window - its default is tiny)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:14b"
+    ollama_num_ctx: int = 16384
+    # OpenAI-compatible server: LM Studio, vLLM, llama.cpp, OpenAI, OpenRouter, Groq...
+    openai_base_url: str = "http://localhost:1234/v1"
+    openai_model: str = "qwen2.5-14b-instruct"
+    openai_api_key: str = ""  # OPENAI_API_KEY env is used when empty
+    # Context window of the OpenAI-compatible model (make sure the server is configured with it).
+    openai_context_tokens: int = 16384
     temperature: float = 0.4
-    # Split long transcripts into windows of this many minutes (0 = send it all at once).
-    # Small local models need this; Claude's 1M context usually does not.
+    # Force windows of this many minutes (0 = automatic: split only when the transcript doesn't
+    # fit the model's context window).
     chunk_minutes: int = 0
+    # When the transcript was split, run a final pass that compares the best candidates
+    # side by side and re-scores them (makes small local models much more consistent).
+    rerank: bool = True
     # Extra guidance appended to the prompt, e.g. "Prefer the funniest moments".
     custom_instructions: str = ""
 
@@ -197,6 +210,18 @@ class PublishingConfig(BaseModel):
     instagram: InstagramConfig = Field(default_factory=InstagramConfig)
 
 
+class StorageConfig(BaseModel):
+    # Reject uploads/imports longer than this (minutes).
+    max_video_minutes: int = 75
+    # Refuse new uploads/processing when the data disk has less free space than this (GB).
+    min_free_gb: float = 3.0
+    # Delete the (large) source video this many days after its clips were generated; 0 = keep forever.
+    # Re-detecting or re-rendering clips needs the source, so those actions disappear afterwards.
+    delete_source_after_days: int = 14
+    # Delete rendered clip files this many days after they were published everywhere; 0 = keep.
+    delete_published_clips_after_days: int = 30
+
+
 class AppConfig(BaseModel):
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -204,6 +229,7 @@ class AppConfig(BaseModel):
     video: VideoConfig = Field(default_factory=VideoConfig)
     subtitles: SubtitleConfig = Field(default_factory=SubtitleConfig)
     publishing: PublishingConfig = Field(default_factory=PublishingConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
 
 
 # Dotted paths of fields that hold secrets: masked in API responses.

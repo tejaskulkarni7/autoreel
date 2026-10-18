@@ -183,7 +183,7 @@ export default function VideoDetailPage() {
               </Button>
             ) : (
               <div className="relative">
-                <Button variant="secondary" onClick={() => setMenuOpen((o) => !o)} disabled={!video.source_url_media}>
+                <Button variant="secondary" onClick={() => setMenuOpen((o) => !o)} disabled={!video.source_url_media || video.source_deleted}>
                   <Wand2 className="size-4" /> Regenerate <ChevronDown className="size-3.5" />
                 </Button>
                 {menuOpen && (
@@ -236,6 +236,9 @@ export default function VideoDetailPage() {
           )}
         </Card>
       )}
+      {video.source_deleted && (
+        <Alert kind="info">The source video was removed by the storage cleanup (Settings → Storage). Clips can still be published, but not re-rendered or regenerated.</Alert>
+      )}
       {video.status === "failed" && video.error && (
         <Alert kind="error">
           <p className="font-medium">Processing failed</p>
@@ -247,7 +250,7 @@ export default function VideoDetailPage() {
         <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
           <Sparkles className="size-4 text-fuchsia-400" /> Clips
         </h2>
-        <Button size="sm" variant="ghost" onClick={() => setAddOpen(true)} disabled={!video.source_url_media}>
+        <Button size="sm" variant="ghost" onClick={() => setAddOpen(true)} disabled={!video.source_url_media || video.source_deleted}>
           <Plus className="size-3.5" /> Add clip manually
         </Button>
       </div>
@@ -276,7 +279,7 @@ export default function VideoDetailPage() {
 
       <ClipEditor
         clip={editing}
-        sourceUrl={video.source_url_media}
+        sourceUrl={video.source_deleted ? null : video.source_url_media}
         open={!!editing}
         onClose={() => setEditing(null)}
         saving={patchClip.isPending}

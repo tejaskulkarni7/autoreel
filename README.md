@@ -19,11 +19,13 @@ long video ─► Whisper transcript ─► LLM picks moments ─► 9:16 face-t
 - **Upload or import**: drag in a file, or paste a URL that `yt-dlp` can download.
 - **Local transcription**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) with word-level
   timestamps. Runs on CPU (int8) or an NVIDIA GPU.
-- **AI highlight detection**: Claude (Anthropic API) or any **OpenAI-compatible** endpoint. For a
-  fully offline setup, use Ollama, LM Studio, vLLM or llama.cpp. The model scores each moment for
+- **AI highlight detection**: Claude (Anthropic API), **Ollama** (local and free), or any
+  OpenAI-compatible endpoint (LM Studio, vLLM, OpenRouter...). The model scores each moment for
   hook, payoff, humor and shareability, and writes a title, an on-screen hook, a caption and
-  hashtags. Clip edges are then snapped to real sentence boundaries, length limits are enforced and
-  overlapping clips are removed.
+  hashtags. Clip edges are then snapped to real sentence boundaries and length limits are enforced.
+  Clips that overlap another clip are trimmed at a sentence boundary, or dropped if they're mostly
+  the same moment. If a transcript is too long for the model's context window, it's split into
+  overlapping windows, and a final pass ranks the best candidates side by side.
 - **Smart 9:16 reframing**: OpenCV's YuNet face detector (with a Haar fallback) and shot-cut
   detection. The crop stays still while the speaker barely moves (like a real camera operator), pans
   smoothly when they do, and jumps on hard cuts. Two-person shots are framed together when both fit.
@@ -40,6 +42,13 @@ long video ─► Whisper transcript ─► LLM picks moments ─► 9:16 face-t
   batch. Network errors are retried automatically.
 - **Posting**: official APIs for YouTube, TikTok and Instagram, plus an optional browser-automation
   TikTok uploader (see the TikTok section for why you might need it).
+- **Test posts**: one click per account. YouTube uploads a private video, TikTok posts an "Only me"
+  video, and Instagram uploads and processes the video without publishing. This verifies every
+  connection before you go live.
+- **Built for real use**: videos up to 1 hour or more (the limit is configurable), a disk-space
+  guard, automatic cleanup of old source videos and already-posted clips, crash-safe job queue,
+  automatic database migrations, and a Docker image with an HTTPS reverse proxy. See
+  **[DEPLOY.md](DEPLOY.md)**.
 
 ## How it's built (and what it reuses)
 
@@ -105,9 +114,13 @@ Then open <http://localhost:8000>, go to **Settings** to check the AI provider a
 a video on **Videos**, and watch the progress bar. The first run downloads the Whisper model (about
 500 MB for `small`) and the face detector.
 
-**Fully local (no cloud AI):** install Ollama, run `ollama pull qwen2.5:14b-instruct` (or a smaller
-model), then in **Settings → AI** choose *OpenAI-compatible*, base URL `http://localhost:11434/v1`
-and chunk minutes `15`.
+**Fully local (no cloud AI):** install [Ollama](https://ollama.com), run `ollama pull qwen2.5:14b`
+(use the biggest model your RAM or VRAM fits), then in **Settings → AI** choose *Ollama*. AutoReel
+sends a 16K-token context window with every request (Ollama's default is much smaller and silently
+cuts off long prompts) and splits long transcripts automatically.
+
+**Docker / cloud server:** see **[DEPLOY.md](DEPLOY.md)**. It covers one-command deployment with
+automatic HTTPS, server sizing and costs, backups, and the credential checklist.
 
 **Development:** run `autoreel serve --reload` together with `cd frontend && npm run dev` (Vite on
 :5173 proxies the API).
@@ -193,6 +206,10 @@ environment variables or `.env` (see `.env.example`):
 | `AUTOREEL_ADMIN_PASSWORD` | – | HTTP basic auth (user `admin`) for the whole UI/API |
 | `AUTOREEL_PUBLIC_BASE_URL` | – | Public HTTPS URL (tunnel) for the TikTok OAuth redirect and Instagram `video_url` uploads |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | – | LLM credentials (alternatively set in Settings) |
+| `AUTOREEL_FORWARDED_ALLOW_IPS` | `127.0.0.1` | Reverse proxies whose `X-Forwarded-*` headers are trusted |
+| `AUTOREEL_ALLOW_NO_AUTH` | – | Allow listening on a public interface without a password (not recommended) |
+
+`autoreel serve` refuses to listen on anything other than localhost unless a password is set.
 
 ## Project layout
 
@@ -201,8 +218,10 @@ autoreel/
   pipeline/      transcribe · highlights (+llm) · reframe · subtitles · render · runner
   publishers/    youtube · tiktok · tiktok_browser · instagram
   api/           REST endpoints (videos, clips, publish, accounts, settings)
-  worker.py      task worker (one subprocess per job) + publish scheduler
+  worker.py      task worker (one subprocess per job) + publish scheduler + hourly cleanup
+  cleanup.py     storage retention
   main.py        FastAPI app, serves the built UI
+Dockerfile, docker-compose.yml, deploy/Caddyfile   production deployment (see DEPLOY.md)
 frontend/        React admin (Vite + Tailwind)
 tests/           pytest suite (pipeline, API, scheduler, publishers with mocked HTTP)
 ```

@@ -111,19 +111,23 @@ class YouTubePublisher(Publisher):
         items = resp.get("items") or []
         return items[0]["snippet"]["title"] if items else self.account.name
 
-    def publish(self, clip: Clip) -> PublishResult:
+    def publish(self, clip: Clip, test: bool = False) -> PublishResult:
         from googleapiclient.errors import HttpError
         from googleapiclient.http import MediaFileUpload
 
         yc = self.cfg.publishing.youtube
+        privacy = "private" if test else yc.privacy
+        title = _shorts_title(clip.title, yc.add_shorts_tag)
+        if test:
+            title = ("[AutoReel test] " + title)[:100]
         body = {
             "snippet": {
-                "title": _shorts_title(clip.title, yc.add_shorts_tag),
+                "title": title,
                 "description": self.caption(clip)[:5000],
                 "tags": (clip.hashtags or [])[:15],
                 "categoryId": yc.category_id,
             },
-            "status": {"privacyStatus": yc.privacy, "selfDeclaredMadeForKids": yc.made_for_kids},
+            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": yc.made_for_kids},
         }
         media = MediaFileUpload(str(Path(clip.file_path)), mimetype="video/mp4", chunksize=8 * 1024 * 1024,
                                 resumable=True)
@@ -140,6 +144,8 @@ class YouTubePublisher(Publisher):
             raise PublishError(f"YouTube upload failed ({status}): {reason}", retryable=status >= 500) from e
         vid = response.get("id")
         note = None
-        if response.get("status", {}).get("privacyStatus") != yc.privacy:
+        if response.get("status", {}).get("privacyStatus") != privacy:
             note = f"YouTube set privacy to {response.get('status', {}).get('privacyStatus')}"
+        if test:
+            note = "Test upload (private) - delete it in YouTube Studio when done"
         return PublishResult(external_id=vid, url=f"https://www.youtube.com/shorts/{vid}", note=note)

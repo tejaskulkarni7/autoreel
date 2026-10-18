@@ -42,6 +42,7 @@ class Video(SQLModel, table=True):
     fps: float | None = None
     size_bytes: int | None = None
     language: str | None = None
+    source_deleted: bool = False  # source file removed by the retention cleanup
     # uploaded | queued | processing | ready | failed | canceled
     status: str = "uploaded"
     stage: str | None = None
@@ -65,7 +66,7 @@ class Clip(SQLModel, table=True):
     reason: str = ""
     category: str = ""
     layout: str | None = None
-    # pending | rendering | ready | failed
+    # pending | rendering | ready | failed | archived (file removed by retention cleanup)
     status: str = "pending"
     error: str | None = None
     file_path: str | None = None
@@ -126,6 +127,8 @@ class PublishJob(SQLModel, table=True):
     # scheduled | running | published | failed | canceled
     status: str = Field(default="scheduled", index=True)
     attempts: int = 0
+    # Test posts: YouTube private, TikTok private/inbox, Instagram upload-only (no publish).
+    test: bool = False
     external_id: str | None = None
     url: str | None = None
     error: str | None = None
@@ -159,7 +162,37 @@ def get_engine():
             cur.close()
 
         SQLModel.metadata.create_all(_engine)
+        _add_missing_columns(_engine)
     return _engine
+
+
+def _sql_default(column) -> str:
+    default = getattr(column.default, "arg", None)
+    if callable(default) or default is None:
+        return "NULL"
+    if isinstance(default, bool):
+        return "1" if default else "0"
+    if isinstance(default, (int, float)):
+        return str(default)
+    return "'" + str(default).replace("'", "''") + "'"
+
+
+def _add_missing_columns(engine) -> None:
+    """Tiny forward-only migration: add columns introduced after a database was created."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in SQLModel.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in existing:
+                    continue
+                coltype = col.type.compile(dialect=engine.dialect)
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {coltype} '
+                                  f"DEFAULT {_sql_default(col)}"))
 
 
 def reset_engine() -> None:

@@ -10,8 +10,9 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from ..cleanup import free_gb
 from ..config import get_server_settings
-from ..db import Clip, PublishJob, Task, Video, get_session, utcnow
+from ..db import Clip, PublishJob, Task, Video, get_session, load_config, utcnow
 from ..pipeline.media import MediaError, probe
 from ..pipeline.transcribe import load_transcript
 from .common import active_task, clip_out, enqueue, get_or_404, iso, latest_task, media_url, video_out
@@ -26,7 +27,8 @@ def publish_summaries(session: Session, clip_ids: list[str]) -> dict[str, dict]:
     out: dict[str, dict] = {cid: {} for cid in clip_ids}
     if not clip_ids:
         return out
-    for j in session.exec(select(PublishJob).where(PublishJob.clip_id.in_(clip_ids))).all():
+    for j in session.exec(select(PublishJob).where(PublishJob.clip_id.in_(clip_ids),
+                                                   PublishJob.test.is_(False))).all():
         cur = out[j.clip_id].get(j.platform)
         # Show the most meaningful status per platform.
         rank = {"published": 4, "running": 3, "scheduled": 2, "failed": 1, "canceled": 0}
@@ -71,6 +73,10 @@ def upload_video(
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, f"Unsupported file type {ext or '(none)'}")
+    storage = load_config(session).storage
+    if free_gb() < storage.min_free_gb:
+        raise HTTPException(507, f"Less than {storage.min_free_gb:g} GB free on the data disk - delete old videos "
+                                 "or lower Settings -> Storage retention")
     video = Video(title=title.strip() or Path(file.filename).stem, filename=file.filename, source_type="upload")
     vdir = _new_video_dir(video.id)
     dest = vdir / f"source{ext}"
@@ -82,6 +88,10 @@ def upload_video(
     except MediaError as e:
         shutil.rmtree(vdir, ignore_errors=True)
         raise HTTPException(400, f"Could not read video: {e}")
+    if video.duration and video.duration > storage.max_video_minutes * 60:
+        shutil.rmtree(vdir, ignore_errors=True)
+        raise HTTPException(400, f"Video is {video.duration / 60:.0f} min long; the limit is "
+                                 f"{storage.max_video_minutes} min (Settings -> Storage)")
     session.add(video)
     session.commit()
     if auto_process:
@@ -147,6 +157,8 @@ def process_video(video_id: str, req: ProcessRequest, session: Session = Depends
     v = get_or_404(session, Video, video_id)
     if not v.path:
         raise HTTPException(400, "Video has no file yet")
+    if v.source_deleted:
+        raise HTTPException(400, "The source video was removed by the storage cleanup - upload it again")
     if active_task(session, video_id):
         raise HTTPException(409, "This video already has a task queued or running")
     has_transcript = (get_server_settings().videos_dir / video_id / "transcript.json").exists()

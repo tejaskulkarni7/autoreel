@@ -119,7 +119,7 @@ class InstagramPublisher(Publisher):
             return "resumable" if self.login_type == "facebook" else "video_url"
         return mode
 
-    def publish(self, clip: Clip) -> PublishResult:
+    def publish(self, clip: Clip, test: bool = False) -> PublishResult:
         token = self._token()
         ig_id = self.account.external_id
         icfg = self.cfg.publishing.instagram
@@ -153,6 +153,9 @@ class InstagramPublisher(Publisher):
                 }), "video upload")
             container_id = container["id"]
             self._wait(c, container_id, token)
+            if test:  # Instagram has no private posts: verify upload + processing, then stop
+                return PublishResult(external_id=container_id,
+                                     note="Test passed: Instagram accepted and processed the video (not published)")
             published = _check(c.post(f"{self.base}/{ig_id}/media_publish",
                                       data={"creation_id": container_id, "access_token": token}), "publish")
             media_id = published.get("id")

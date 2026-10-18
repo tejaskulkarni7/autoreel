@@ -43,7 +43,12 @@ export function ClipCard({
         {clip.video_url ? (
           <video key={clip.video_url} src={clip.video_url} poster={clip.thumb_url ?? undefined} controls preload="none" playsInline className="size-full object-contain" />
         ) : (
-          <div className="flex size-full items-center justify-center text-sm text-zinc-500">{clip.status === "failed" ? "Render failed" : "Not rendered yet"}</div>
+          <div className="relative flex size-full items-center justify-center text-sm text-zinc-500">
+            {clip.status === "archived" && clip.thumb_url && <img src={clip.thumb_url} alt="" className="absolute inset-0 size-full object-cover opacity-40" />}
+            <span className="relative px-3 text-center">
+              {clip.status === "failed" ? "Render failed" : clip.status === "archived" ? "Posted - video file removed by storage cleanup" : "Not rendered yet"}
+            </span>
+          </div>
         )}
         {busy && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-zinc-200">

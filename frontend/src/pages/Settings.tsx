@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Captions, CheckCircle2, Cpu, Eye, Film, Mic, RotateCcw, Save, Send, Scissors, XCircle } from "lucide-react";
+import { Bot, Captions, CheckCircle2, Cpu, Eye, Film, HardDrive, Mic, RotateCcw, Save, Send, Scissors, XCircle } from "lucide-react";
 import { api, type AppConfig, type SystemStatus } from "../api";
 import { Alert, Button, Card, CardHeader, ColorInput, Field, NumberInput, Select, Spinner, TextArea, TextInput, Toggle, errMsg, useToast } from "../components/ui";
 
@@ -150,11 +150,12 @@ export default function SettingsPage() {
             onChange={set(["llm", "provider"])}
             options={[
               { value: "anthropic", label: "Claude (Anthropic API)" },
-              { value: "openai_compatible", label: "OpenAI-compatible / local (Ollama, LM Studio…)" },
+              { value: "ollama", label: "Ollama (local, free)" },
+              { value: "openai_compatible", label: "OpenAI-compatible (LM Studio, vLLM, OpenRouter…)" },
             ]}
           />
         </Field>
-        {llm.provider === "anthropic" ? (
+        {llm.provider === "anthropic" && (
           <>
             <Field label="Model" hint="claude-opus-5-5 is the most capable; sonnet/haiku are cheaper.">
               <TextInput list="claude-models" value={llm.anthropic_model} onChange={(e) => set(["llm", "anthropic_model"])(e.target.value)} />
@@ -175,25 +176,48 @@ export default function SettingsPage() {
               />
             </Field>
           </>
-        ) : (
+        )}
+        {llm.provider === "ollama" && (
           <>
-            <Field label="Base URL" hint="Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1">
-              <TextInput value={llm.openai_base_url} onChange={(e) => set(["llm", "openai_base_url"])(e.target.value)} />
+            <Field label="Ollama URL" hint="http://localhost:11434 · in docker-compose: http://ollama:11434">
+              <TextInput value={llm.ollama_base_url} onChange={(e) => set(["llm", "ollama_base_url"])(e.target.value)} />
             </Field>
-            <Field label="Model" hint="e.g. qwen2.5:14b-instruct, llama3.1:8b, gpt-4.1-mini">
-              <TextInput value={llm.openai_model} onChange={(e) => set(["llm", "openai_model"])(e.target.value)} />
+            <Field label="Model" hint="Biggest instruct model your machine fits, e.g. qwen2.5:14b or qwen2.5:32b. Pull it first: ollama pull <model>">
+              <TextInput value={llm.ollama_model} onChange={(e) => set(["llm", "ollama_model"])(e.target.value)} />
             </Field>
-            <Field label="API key" hint="Not needed for Ollama.">
-              <TextInput type="password" value={llm.openai_api_key} onChange={(e) => set(["llm", "openai_api_key"])(e.target.value)} />
+            <Field label="Context window (tokens)" hint="Sent with every request. 16384 fits ~45 min of speech per window; bigger needs more RAM/VRAM.">
+              <NumberInput value={llm.ollama_num_ctx} step={1024} min={2048} onChange={set(["llm", "ollama_num_ctx"])} />
             </Field>
             <Field label="Temperature">
               <NumberInput value={llm.temperature} step={0.1} min={0} max={2} onChange={set(["llm", "temperature"])} />
             </Field>
           </>
         )}
-        <Field label="Chunk transcript (minutes)" hint="0 = send the whole transcript. Use 10-20 for small local models.">
+        {llm.provider === "openai_compatible" && (
+          <>
+            <Field label="Base URL" hint="LM Studio: http://localhost:1234/v1 · vLLM: http://host:8000/v1">
+              <TextInput value={llm.openai_base_url} onChange={(e) => set(["llm", "openai_base_url"])(e.target.value)} />
+            </Field>
+            <Field label="Model">
+              <TextInput value={llm.openai_model} onChange={(e) => set(["llm", "openai_model"])(e.target.value)} />
+            </Field>
+            <Field label="API key" hint="Not needed for local servers.">
+              <TextInput type="password" value={llm.openai_api_key} onChange={(e) => set(["llm", "openai_api_key"])(e.target.value)} />
+            </Field>
+            <Field label="Model context window (tokens)" hint="Must match what the server is configured with - long transcripts are split to fit.">
+              <NumberInput value={llm.openai_context_tokens} step={1024} min={2048} onChange={set(["llm", "openai_context_tokens"])} />
+            </Field>
+            <Field label="Temperature">
+              <NumberInput value={llm.temperature} step={0.1} min={0} max={2} onChange={set(["llm", "temperature"])} />
+            </Field>
+          </>
+        )}
+        <Field label="Force chunks of N minutes" hint="0 = automatic (split only when the transcript doesn't fit the context window).">
           <NumberInput value={llm.chunk_minutes} min={0} onChange={set(["llm", "chunk_minutes"])} />
         </Field>
+        <div className="flex items-end pb-2">
+          <Toggle checked={llm.rerank} onChange={set(["llm", "rerank"])} label="Final ranking pass" hint="When split, compare the best candidates side by side" />
+        </div>
         <div className="flex items-end">
           <Button onClick={() => testLlm.mutate()} loading={testLlm.isPending}>
             Test connection
@@ -503,6 +527,21 @@ export default function SettingsPage() {
         <div className="flex items-end pb-2">
           <Toggle checked={pub.instagram.share_to_feed} onChange={set(["publishing", "instagram", "share_to_feed"])} label="Also show Reels in the main feed" />
         </div>
+      </Section>
+
+      <Section id="storage" icon={<HardDrive className="size-4" />} title="Storage" subtitle="Keeps the disk from filling up. Source videos are large (2-4 GB per hour of 1080p).">
+        <Field label="Max video length (min)">
+          <NumberInput value={cfg.storage.max_video_minutes} min={1} onChange={set(["storage", "max_video_minutes"])} />
+        </Field>
+        <Field label="Keep at least (GB free)" hint="Uploads and processing stop below this.">
+          <NumberInput value={cfg.storage.min_free_gb} step={0.5} min={0} onChange={set(["storage", "min_free_gb"])} />
+        </Field>
+        <Field label="Delete source videos after (days)" hint="Counted from when clips were generated. After that, clips can't be re-rendered. 0 = never.">
+          <NumberInput value={cfg.storage.delete_source_after_days} min={0} onChange={set(["storage", "delete_source_after_days"])} />
+        </Field>
+        <Field label="Delete posted clip files after (days)" hint="Only clips published on every scheduled account. Thumbnails and history are kept. 0 = never.">
+          <NumberInput value={cfg.storage.delete_published_clips_after_days} min={0} onChange={set(["storage", "delete_published_clips_after_days"])} />
+        </Field>
       </Section>
 
       {remote.error && <Alert kind="error">{errMsg(remote.error)}</Alert>}

@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..config import ClipsConfig, LLMConfig
-from .llm import LLMClient
+from .llm import LLMClient, estimate_tokens
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +92,9 @@ class Candidate:
     score: int = 0
     category: str = "other"
     reason: str = ""
+    # word indices of the first/last spoken word (used to trim overlaps on sentence boundaries)
+    si: int = field(default=-1, repr=False)
+    ei: int = field(default=-1, repr=False)
 
     @property
     def duration(self) -> float:
@@ -147,6 +150,91 @@ def _windows(duration: float, chunk_minutes: int, overlap: float = 60.0) -> list
     return out
 
 
+def token_windows(segments: list[dict], budget: int, overlap: float = 60.0) -> list[tuple[float, float]]:
+    """Split the transcript into time windows whose formatted text fits ``budget`` tokens."""
+    if not segments:
+        return []
+    out: list[tuple[float, float]] = []
+    start_i, used = 0, 0
+    for i, seg in enumerate(segments):
+        cost = estimate_tokens(f"[{seg['start']:.1f}s - {seg['end']:.1f}s] {seg['text']}\n")
+        if used + cost > budget and i > start_i:
+            out.append((segments[start_i]["start"], segments[i - 1]["end"]))
+            # next window starts ~overlap seconds earlier so moments on the seam aren't lost
+            back = i
+            while back > start_i + 1 and segments[i - 1]["end"] - segments[back - 1]["start"] < overlap:
+                back -= 1
+            start_i = back if back < i else i
+            used = sum(estimate_tokens(f"[{x['start']:.1f}s - {x['end']:.1f}s] {x['text']}\n")
+                       for x in segments[start_i:i])
+        used += cost
+    out.append((segments[start_i]["start"], segments[-1]["end"]))
+    return out
+
+
+def plan_windows(segments: list[dict], duration: float, llm: LLMClient, llm_cfg: LLMConfig) -> list[tuple[float, float]]:
+    budget = int(getattr(llm, "context_tokens", 100_000)) - int(getattr(llm, "output_reserve", 0)) \
+        - estimate_tokens(SYSTEM_PROMPT) - 600
+    budget = max(1000, budget)
+    out: list[tuple[float, float]] = []
+    for a, b in _windows(duration, llm_cfg.chunk_minutes):
+        inside = [seg for seg in segments if seg["end"] >= a and seg["start"] <= b]
+        out.extend(token_windows(inside, budget) or [(a, b)])
+    return out
+
+
+RERANK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ranking": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "score": {"type": "integer"}},
+                "required": ["id", "score"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["ranking"],
+    "additionalProperties": False,
+}
+
+RERANK_PROMPT = """You are a senior short-form video editor doing the final selection. Below are candidate \
+clips cut from one long video, each with its exact transcript. Compare them against each other and \
+score every one 0-100 for how well it would perform as a standalone TikTok / Reel / Short: strong \
+hook in the first seconds, self-contained, clear payoff, energy, shareability. Use the full range \
+and make the scores comparable across candidates. Return one entry per candidate id."""
+
+
+def clip_text(segments: list[dict], start: float, end: float, max_chars: int = 1500) -> str:
+    text = " ".join(s["text"].strip() for s in segments if s["end"] > start and s["start"] < end)
+    return text[:max_chars]
+
+
+def rerank(cands: list[Candidate], segments: list[dict], llm: LLMClient, custom_instructions: str = "") -> None:
+    """Re-score candidates side by side (in place). Failures keep the original scores."""
+    lines = []
+    for i, c in enumerate(cands):
+        lines.append(f"<candidate id=\"{i}\" length=\"{c.duration:.0f}s\">\nTitle: {c.title}\nTranscript: "
+                     f"{clip_text(segments, c.start, c.end)}\n</candidate>")
+    user = "\n\n".join(lines)
+    if custom_instructions.strip():
+        user += f"\n\nExtra instructions from the channel owner: {custom_instructions.strip()}"
+    try:
+        result = llm.complete_json(RERANK_PROMPT, user, RERANK_SCHEMA)
+    except Exception as e:  # ranking is an optimization; never fail the video over it
+        log.warning("Rerank pass failed, keeping first-pass scores: %s", e)
+        return
+    for item in result.get("ranking") or []:
+        try:
+            idx, score = int(item["id"]), int(item["score"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= idx < len(cands):
+            cands[idx].score = max(0, min(100, score))
+
+
 def detect_highlights(
     transcript: dict,
     llm: LLMClient,
@@ -160,24 +248,35 @@ def detect_highlights(
     duration = float(transcript.get("duration") or (segments[-1]["end"] if segments else 0.0))
     if not segments:
         return []
-    windows = _windows(duration, llm_cfg.chunk_minutes)
+    windows = plan_windows(segments, duration, llm, llm_cfg)
+    chunked = len(windows) > 1
+    steps = len(windows) + (1 if chunked and llm_cfg.rerank else 0)
     # Ask for extra candidates so dedupe/filtering still leaves enough good ones.
     total_wanted = max(1, math.ceil(clips_cfg.max_clips * 1.5))
     raw: list[dict] = []
     for i, (a, b) in enumerate(windows):
-        wanted = total_wanted if len(windows) == 1 else max(2, math.ceil(total_wanted * (b - a) / duration) + 1)
+        wanted = total_wanted if not chunked else max(2, math.ceil(total_wanted * (b - a) / duration) + 1)
         text = format_transcript(segments, a, b)
         if not text:
             continue
         prompt = build_user_prompt(
             text, duration, clips_cfg, wanted, llm_cfg.custom_instructions,
-            part=(i + 1, len(windows), a, b) if len(windows) > 1 else None, title=title,
+            part=(i + 1, len(windows), a, b) if chunked else None, title=title,
         )
         result = llm.complete_json(SYSTEM_PROMPT, prompt, CLIP_SCHEMA)
         raw.extend(result.get("clips") or [])
         if progress:
-            progress((i + 1) / len(windows))
+            progress((i + 1) / steps)
     words = [Word(w["start"], w["end"], w["word"]) for w in _flatten(transcript)]
+    if chunked and llm_cfg.rerank:
+        pool = postprocess(raw, words, duration, clips_cfg, max_hashtags,
+                           keep_limit=max(clips_cfg.max_clips * 2, clips_cfg.max_clips + 4), apply_min_score=False)
+        if len(pool) > 1:
+            rerank(pool, segments, llm, llm_cfg.custom_instructions)
+        if progress:
+            progress(1.0)
+        pool.sort(key=lambda c: c.score, reverse=True)
+        return [c for c in pool if c.score >= clips_cfg.min_score][: clips_cfg.max_clips]
     return postprocess(raw, words, duration, clips_cfg, max_hashtags)
 
 
@@ -263,13 +362,45 @@ def clean_hashtags(tags, limit: int) -> list[str]:
     return out[:limit]
 
 
-def _overlap(a: Candidate, b: Candidate) -> float:
-    inter = max(0.0, min(a.end, b.end) - max(a.start, b.start))
-    return inter / max(1e-6, min(a.duration, b.duration))
+def _intersection(a: Candidate, b: Candidate) -> float:
+    return max(0.0, min(a.end, b.end) - max(a.start, b.start))
+
+
+def _bounds(si: int, ei: int, words: list[Word], duration: float, cfg: ClipsConfig) -> tuple[float, float]:
+    """Clip start/end for a word range, with padding that never bleeds into neighbouring words."""
+    clip_start = max(0.0, words[si].start - cfg.pad_start)
+    if si > 0:
+        clip_start = max(clip_start, min(words[si - 1].end, words[si].start))
+    clip_end = min(duration, words[ei].end + cfg.pad_end)
+    if ei + 1 < len(words):
+        clip_end = min(clip_end, max(words[ei + 1].start, words[ei].end))
+    return round(clip_start, 3), round(clip_end, 3)
+
+
+def _trim_against(c: Candidate, k: Candidate, words: list[Word], starts: list[bool], ends: list[bool],
+                  duration: float, cfg: ClipsConfig) -> bool:
+    """Shrink ``c`` so it no longer overlaps kept clip ``k``. Returns False if it can't stay long enough."""
+    min_len = cfg.min_duration * 0.8
+    if c.start < k.start:  # overlap at c's tail -> end at a sentence end before k starts
+        options = [i for i in range(c.si, c.ei + 1) if ends[i] and words[i].end <= k.start + 0.05]
+        if not options:
+            return False
+        new_si, new_ei = c.si, max(options)
+    else:  # overlap at c's head -> start at a sentence start after k ends
+        options = [i for i in range(c.si, c.ei + 1) if starts[i] and words[i].start >= k.end - 0.05]
+        if not options:
+            return False
+        new_si, new_ei = min(options), c.ei
+    s, e = _bounds(new_si, new_ei, words, duration, cfg)
+    if e - s < min_len:
+        return False
+    c.si, c.ei, c.start, c.end = new_si, new_ei, s, e
+    return True
 
 
 def postprocess(
-    raw: list[dict], words: list[Word], duration: float, cfg: ClipsConfig, max_hashtags: int = 6
+    raw: list[dict], words: list[Word], duration: float, cfg: ClipsConfig, max_hashtags: int = 6,
+    keep_limit: int | None = None, apply_min_score: bool = True,
 ) -> list[Candidate]:
     if not words:
         return []
@@ -287,12 +418,7 @@ def postprocess(
         ei = snap_end(e, words, ends)
         ei = max(ei, si)
         ei = fit_length(si, ei, words, ends, cfg)
-        clip_start = max(0.0, words[si].start - cfg.pad_start)
-        if si > 0:
-            clip_start = max(clip_start, min(words[si - 1].end, words[si].start))
-        clip_end = min(duration, words[ei].end + cfg.pad_end)
-        if ei + 1 < len(words):
-            clip_end = min(clip_end, max(words[ei + 1].start, words[ei].end))
+        clip_start, clip_end = _bounds(si, ei, words, duration, cfg)
         if clip_end - clip_start < min(cfg.min_duration * 0.6, cfg.min_duration - 1):
             log.info("Dropping too-short clip %.1f-%.1f", clip_start, clip_end)
             continue
@@ -303,8 +429,8 @@ def postprocess(
         category = str(r.get("category") or "other").lower()
         cands.append(
             Candidate(
-                start=round(clip_start, 3),
-                end=round(clip_end, 3),
+                start=clip_start,
+                end=clip_end,
                 title=str(r.get("title") or "").strip()[:100],
                 hook=str(r.get("hook") or "").strip()[:80],
                 caption=str(r.get("caption") or "").strip(),
@@ -312,16 +438,31 @@ def postprocess(
                 score=max(0, min(100, score)),
                 category=category if category in CATEGORIES else "other",
                 reason=str(r.get("reason") or "").strip(),
+                si=si,
+                ei=ei,
             )
         )
     cands.sort(key=lambda c: c.score, reverse=True)
+    limit = keep_limit or cfg.max_clips
     kept: list[Candidate] = []
     for c in cands:
-        if c.score < cfg.min_score:
+        if apply_min_score and c.score < cfg.min_score:
             continue
-        if any(_overlap(c, k) > 0.5 for k in kept):
+        ok = True
+        for _ in range(3):  # trimming against one clip can create overlap with another
+            clash = next((k for k in kept if _intersection(c, k) > 0.3), None)
+            if clash is None:
+                break
+            # Mostly the same moment -> duplicate; otherwise trim at a sentence boundary.
+            if _intersection(c, clash) / max(1e-6, min(c.duration, clash.duration)) > 0.5 or \
+                    not _trim_against(c, clash, words, starts, ends, duration, cfg):
+                ok = False
+                break
+        else:
+            ok = not any(_intersection(c, k) > 0.3 for k in kept)
+        if not ok:
             continue
         kept.append(c)
-        if len(kept) >= cfg.max_clips:
+        if len(kept) >= limit:
             break
     return kept

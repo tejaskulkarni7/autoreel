@@ -54,7 +54,8 @@ class Publisher:
         p = self.cfg.publishing
         return render_caption(p.caption_template, clip, p.max_hashtags)
 
-    def publish(self, clip: Clip) -> PublishResult:  # pragma: no cover - interface
+    def publish(self, clip: Clip, test: bool = False) -> PublishResult:  # pragma: no cover - interface
+        """Post the clip. ``test=True`` posts privately (or uploads without publishing) to check the setup."""
         raise NotImplementedError
 
     def check(self) -> str:

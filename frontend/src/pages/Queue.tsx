@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarClock, ExternalLink, Pause, Play, RotateCcw, Trash2, X, Zap } from "lucide-react";
 import { api, type JobStatus, type PublishJob } from "../api";
 import { PlatformIcon } from "../components/PlatformIcon";
-import { Alert, Button, Card, CardHeader, EmptyState, Spinner, StatusBadge, cx, errMsg, useToast } from "../components/ui";
+import { Alert, Badge, Button, Card, CardHeader, EmptyState, Spinner, StatusBadge, cx, errMsg, useToast } from "../components/ui";
 import { fmtDateTime, fmtRelative } from "../format";
 
 const FILTERS: { key: string; label: string; statuses?: JobStatus[] }[] = [
@@ -113,6 +113,7 @@ export default function QueuePage() {
                     <PlatformIcon platform={j.platform} />
                     <span className="text-sm text-zinc-400">{j.account?.name}</span>
                     <StatusBadge status={j.status} />
+                    {j.test && <Badge color="blue">test</Badge>}
                     {j.attempts > 1 && <span className="text-xs text-zinc-500">attempt {j.attempts}</span>}
                   </div>
                   {j.clip ? (

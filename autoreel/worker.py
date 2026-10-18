@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 PUBLISH_PAUSED_KEY = "publish_paused"
 MAX_AUTO_ATTEMPTS = 3
 RETRY_DELAY = timedelta(minutes=2)
+CLEANUP_INTERVAL = 3600.0
 
 
 def _task_entry(task_id: str) -> None:  # runs in the child process
@@ -157,11 +158,20 @@ class PublishScheduler(threading.Thread):
 
     def run(self) -> None:
         self.recover()
+        last_cleanup = 0.0
         while not self._stop_event.is_set():
             try:
                 self.tick()
             except Exception:  # keep the loop alive
                 log.exception("publish scheduler tick failed")
+            if time.time() - last_cleanup > CLEANUP_INTERVAL:
+                last_cleanup = time.time()
+                try:
+                    from .cleanup import run_cleanup
+
+                    run_cleanup()
+                except Exception:
+                    log.exception("retention cleanup failed")
             self._stop_event.wait(self.poll_interval)
 
     def tick(self) -> int:
@@ -204,7 +214,7 @@ def execute_publish_job(job_id: str) -> None:
     cfg = load_config()
     try:
         publisher = get_publisher(account, cfg)
-        result = publisher.publish(clip)
+        result = publisher.publish(clip, test=job.test)
     except PublishError as e:
         retry = e.retryable and attempts < MAX_AUTO_ATTEMPTS
         update_row(

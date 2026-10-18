@@ -1,0 +1,18 @@
+# Run on your own computer with Docker (no HTTPS, only reachable from this machine):
+#   docker compose -f docker-compose.local.yml up -d --build   ->  http://localhost:8000
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AUTOREEL_ALLOW_NO_AUTH: "1"  # port is bound to 127.0.0.1 below
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - autoreel-data:/data
+
+volumes:
+  autoreel-data:

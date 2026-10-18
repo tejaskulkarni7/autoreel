@@ -12,7 +12,14 @@ from .common import clip_out, enqueue, get_or_404
 router = APIRouter(prefix="/api/clips", tags=["clips"])
 
 
+def _require_source(session: Session, clip: Clip) -> None:
+    video = session.get(Video, clip.video_id)
+    if video is None or video.source_deleted or not video.path:
+        raise HTTPException(400, "The source video was removed by the storage cleanup - this clip can't be re-rendered")
+
+
 def _queue_render(session: Session, clip: Clip) -> None:
+    _require_source(session, clip)
     pending = session.exec(select(Task).where(Task.clip_id == clip.id, Task.kind == "render_clip",
                                               Task.status == "queued")).first()
     if not pending:
@@ -56,6 +63,8 @@ def patch_clip(clip_id: str, patch: ClipPatch, session: Session = Depends(get_se
             clip.start, clip.end = round(start, 3), round(end, 3)
             needs_render = True
     clip.updated_at = utcnow()
+    if needs_render:
+        _require_source(session, clip)
     session.add(clip)
     session.commit()
     if needs_render:

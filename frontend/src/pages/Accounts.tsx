@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Copy, ExternalLink, FileJson, PlugZap, Trash2, Upload } from "lucide-react";
+import { CheckCircle2, Copy, ExternalLink, FileJson, PlugZap, Send, Trash2, Upload } from "lucide-react";
 import { api, type Account, type AccountsResponse, type Platform } from "../api";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { Alert, Badge, Button, Card, CardHeader, Field, Select, Spinner, TextArea, TextInput, Toggle, errMsg, useToast } from "../components/ui";
@@ -39,6 +39,17 @@ function AccountRow({ a, onChange }: { a: Account; onChange: () => void }) {
       onChange();
     },
   });
+  const testPost = useMutation({
+    mutationFn: () => api<{ job_id: string; clip_title: string }>(`/api/accounts/${a.id}/test-publish`, { method: "POST", json: {} }),
+    onSuccess: (r) =>
+      toast(
+        "success",
+        a.platform === "instagram"
+          ? `Test queued with "${r.clip_title}": uploads and processes on Instagram without publishing. Watch Publishing → All.`
+          : `Private test post queued with "${r.clip_title}". Watch Publishing → All, then delete it on the platform.`,
+      ),
+    onError: (e) => toast("error", errMsg(e)),
+  });
   const patch = useMutation({
     mutationFn: (enabled: boolean) => api(`/api/accounts/${a.id}`, { method: "PATCH", json: { enabled } }),
     onSuccess: onChange,
@@ -65,8 +76,17 @@ function AccountRow({ a, onChange }: { a: Account; onChange: () => void }) {
         {a.last_error && <p className="mt-0.5 line-clamp-2 text-xs text-red-400">{a.last_error}</p>}
       </div>
       <Toggle checked={a.enabled} onChange={(v) => patch.mutate(v)} label={<span className="text-xs">{a.enabled ? "Posting" : "Off"}</span>} />
-      <Button size="sm" variant="secondary" onClick={() => test.mutate()} loading={test.isPending}>
-        <PlugZap className="size-3.5" /> Test
+      <Button size="sm" variant="secondary" onClick={() => test.mutate()} loading={test.isPending} title="Check the login/token">
+        <PlugZap className="size-3.5" /> Check
+      </Button>
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => testPost.mutate()}
+        loading={testPost.isPending}
+        title={a.platform === "instagram" ? "Upload a clip to Instagram without publishing it" : "Post one clip privately to verify everything works"}
+      >
+        <Send className="size-3.5" /> Test post
       </Button>
       <Button size="sm" variant="ghost" onClick={() => confirm(`Remove ${a.name}? Scheduled posts to it are deleted.`) && del.mutate()}>
         <Trash2 className="size-3.5" />

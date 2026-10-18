@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -47,7 +48,8 @@ def transcribe(
     device, compute = resolve_device(cfg)
     log.info("Loading whisper model %s on %s (%s)", cfg.model, device, compute)
     try:
-        model = WhisperModel(cfg.model, device=device, compute_type=compute, download_root=str(models_dir))
+        model = WhisperModel(cfg.model, device=device, compute_type=compute, download_root=str(models_dir),
+                             cpu_threads=(os.cpu_count() or 4) if device == "cpu" else 0)
     except Exception as e:
         if Path(cfg.model).exists():
             raise
@@ -56,13 +58,17 @@ def transcribe(
             "from huggingface.co - check your internet connection, or set Settings -> Transcription -> Model to "
             "a local faster-whisper model folder."
         ) from e
-    segments_iter, info = model.transcribe(
-        str(audio_path),
-        language=cfg.language or None,
-        beam_size=cfg.beam_size,
-        word_timestamps=True,
-        vad_filter=cfg.vad_filter,
-    )
+    kwargs = dict(language=cfg.language or None, beam_size=cfg.beam_size, word_timestamps=True,
+                  vad_filter=cfg.vad_filter)
+    if device == "cuda":
+        # Batched inference is several times faster on a GPU (VAD-based chunking is built in).
+        from faster_whisper import BatchedInferencePipeline
+
+        kwargs.pop("vad_filter")
+        segments_iter, info = BatchedInferencePipeline(model=model).transcribe(str(audio_path), batch_size=16,
+                                                                               **kwargs)
+    else:
+        segments_iter, info = model.transcribe(str(audio_path), **kwargs)
     total = float(info.duration or 0.0)
     segments = []
     for seg in segments_iter:

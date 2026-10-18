@@ -50,9 +50,15 @@ def main(argv: list[str] | None = None) -> int:
     s = get_server_settings()
     host = getattr(args, "host", None) or s.host
     port = getattr(args, "port", None) or s.port
+    if host not in ("127.0.0.1", "localhost", "::1") and not s.admin_password and not s.allow_no_auth:
+        print(f"Refusing to listen on {host} without a password: anyone who can reach this machine could post "
+              "to your accounts. Set AUTOREEL_ADMIN_PASSWORD (or AUTOREEL_ALLOW_NO_AUTH=1 if you really mean it).",
+              file=sys.stderr)
+        return 2
     print(f"AutoReel running at http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}")
     uvicorn.run("autoreel.main:app", host=host, port=port, reload=getattr(args, "reload", False),
-                log_level="info")
+                log_level="info", proxy_headers=True, forwarded_allow_ips=s.forwarded_allow_ips,
+                timeout_keep_alive=30)
     return 0
 
 

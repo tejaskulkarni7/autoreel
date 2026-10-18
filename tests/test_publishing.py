@@ -164,7 +164,7 @@ def test_scheduler_runs_due_jobs_and_retries(tmp_path, monkeypatch):
         def __init__(self, account):
             self.account = account
 
-        def publish(self, c):
+        def publish(self, c, test=False):
             calls.append(self.account.platform)
             if self.account.platform == "instagram":
                 raise PublishError("temporarily down", retryable=True)

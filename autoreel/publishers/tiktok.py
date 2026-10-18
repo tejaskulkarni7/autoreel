@@ -125,8 +125,10 @@ class TikTokPublisher(Publisher):
         user = fetch_user(self._token())
         return user.get("display_name") or self.account.name
 
-    def publish(self, clip: Clip) -> PublishResult:
+    def publish(self, clip: Clip, test: bool = False) -> PublishResult:
         tc = self.cfg.publishing.tiktok
+        if test:  # private post: never public, even for audited apps
+            tc = tc.model_copy(update={"privacy_level": "SELF_ONLY"})
         size = os.path.getsize(clip.file_path)
         chunk_size, chunks = chunk_plan(size)
         source = {"source": "FILE_UPLOAD", "video_size": size, "chunk_size": chunk_size, "total_chunk_count": chunks}
@@ -164,6 +166,8 @@ class TikTokPublisher(Publisher):
         url = f"https://www.tiktok.com/@{username}/video/{post_id}" if (post_id and username) else None
         if tc.mode == "inbox":
             note = (note + "; " if note else "") + "Sent to TikTok inbox - finish posting in the TikTok app"
+        elif test:
+            note = (note + "; " if note else "") + "Test post (Only me) - delete it in the TikTok app when done"
         return PublishResult(external_id=post_id or publish_id, url=url, note=note)
 
     def _upload(self, c, url: str, path: str, size: int, chunk_size: int, chunks: int) -> None:

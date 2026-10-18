@@ -35,7 +35,7 @@ class TikTokBrowserPublisher(Publisher):
             raise PublishError('tiktok-uploader not installed: uv pip install -e ".[tiktok-browser]"') from e
         return self.account.name
 
-    def publish(self, clip: Clip) -> PublishResult:
+    def publish(self, clip: Clip, test: bool = False) -> PublishResult:
         try:
             from tiktok_uploader.upload import upload_video
         except ImportError as e:
@@ -50,7 +50,7 @@ class TikTokBrowserPublisher(Publisher):
                 str(clip.file_path),
                 description=self.caption(clip),
                 cookies=str(cookies),
-                visibility=VISIBILITY.get(tc.privacy_level, "everyone"),
+                visibility="only_you" if test else VISIBILITY.get(tc.privacy_level, "everyone"),
                 browser=tc.browser,
                 headless=tc.headless,
             )

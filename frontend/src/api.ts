@@ -39,7 +39,7 @@ export interface Clip {
   reason: string;
   category: string;
   layout: string | null;
-  status: "pending" | "rendering" | "ready" | "failed";
+  status: "pending" | "rendering" | "ready" | "failed" | "archived";
   error: string | null;
   approved: boolean;
   video_url: string | null;
@@ -68,6 +68,7 @@ export interface Video {
   stage: string | null;
   progress: number;
   error: string | null;
+  source_deleted: boolean;
   clip_count: number;
   ready_clip_count: number;
   source_url_media: string | null;
@@ -95,6 +96,7 @@ export interface PublishJob {
   error: string | null;
   created_at: string;
   published_at: string | null;
+  test: boolean;
   clip: { title: string; thumb_url: string | null; video_id: string; score: number } | null;
   account: { name: string; platform: Platform } | null;
 }
@@ -151,15 +153,20 @@ export interface AppConfig {
     vad_filter: boolean;
   };
   llm: {
-    provider: "anthropic" | "openai_compatible";
+    provider: "anthropic" | "ollama" | "openai_compatible";
     anthropic_model: string;
     anthropic_api_key: string;
     anthropic_effort: "low" | "medium" | "high" | "xhigh" | "max";
+    ollama_base_url: string;
+    ollama_model: string;
+    ollama_num_ctx: number;
     openai_base_url: string;
     openai_model: string;
     openai_api_key: string;
+    openai_context_tokens: number;
     temperature: number;
     chunk_minutes: number;
+    rerank: boolean;
     custom_instructions: string;
   };
   clips: {
@@ -204,6 +211,12 @@ export interface AppConfig {
       headless: boolean;
     };
     instagram: { share_to_feed: boolean; graph_api_version: string; upload_mode: "auto" | "resumable" | "video_url" };
+  };
+  storage: {
+    max_video_minutes: number;
+    min_free_gb: number;
+    delete_source_after_days: number;
+    delete_published_clips_after_days: number;
   };
 }
 

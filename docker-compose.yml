@@ -1,0 +1,52 @@
+# Production: AutoReel behind Caddy (automatic HTTPS via Let's Encrypt).
+#   cp .env.example .env   # set DOMAIN, AUTOREEL_ADMIN_PASSWORD, ANTHROPIC_API_KEY
+#   docker compose up -d --build
+# Optional local LLM:  docker compose --profile ollama up -d   (then pick "Ollama" in Settings,
+#   base URL http://ollama:11434, and run: docker compose exec ollama ollama pull qwen2.5:14b)
+services:
+  app:
+    build:
+      context: .
+      args:
+        TIKTOK_BROWSER: ${TIKTOK_BROWSER:-false}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AUTOREEL_ADMIN_PASSWORD: ${AUTOREEL_ADMIN_PASSWORD:?Set AUTOREEL_ADMIN_PASSWORD in .env}
+      AUTOREEL_PUBLIC_BASE_URL: https://${DOMAIN:?Set DOMAIN in .env}
+      AUTOREEL_FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - autoreel-data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    environment:
+      OLLAMA_CONTEXT_LENGTH: "16384"
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  autoreel-data:
+  caddy-data:
+  caddy-config:
+  ollama:

@@ -1,8 +1,13 @@
 """LLM providers used for highlight detection.
 
 * ``anthropic`` - Claude via the official Anthropic SDK, with JSON-schema structured output.
-* ``openai_compatible`` - any OpenAI-compatible chat endpoint: Ollama / LM Studio / vLLM /
-  llama.cpp for fully local runs, or hosted ones (OpenAI, OpenRouter, Groq...).
+* ``ollama`` - local models through Ollama's native API (lets us set ``num_ctx``; Ollama's
+  default context window is small and silently truncates long prompts).
+* ``openai_compatible`` - any OpenAI-compatible chat endpoint: LM Studio, vLLM, llama.cpp,
+  or hosted ones (OpenAI, OpenRouter, Groq...).
+
+Every client exposes ``context_tokens`` - how much prompt it can take - so the highlight
+detector can split long transcripts into windows that actually fit.
 """
 
 from __future__ import annotations
@@ -27,7 +32,15 @@ class LLMError(RuntimeError):
 
 
 class LLMClient(Protocol):
+    context_tokens: int
+    output_reserve: int
+
     def complete_json(self, system: str, user: str, schema: dict) -> dict: ...
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token count (~3.5 characters per token for English prose)."""
+    return int(len(text) / 3.5) + 1
 
 
 def extract_json(text: str) -> dict:
@@ -58,11 +71,23 @@ def _supports_effort(model: str) -> bool:
 
 
 class AnthropicLLM:
+    # Claude models have 200K-1M token windows; a 1-hour transcript is ~15K tokens.
+    context_tokens = 150_000
+    output_reserve = 0  # output has its own max_tokens budget
+
     def __init__(self, cfg: LLMConfig):
         import anthropic
 
         self.cfg = cfg
         self.client = anthropic.Anthropic(api_key=cfg.anthropic_api_key or None, max_retries=3)
+
+    def _call(self, params: dict, use_fallbacks: bool):
+        if use_fallbacks:
+            ctx = self.client.beta.messages.stream(betas=[_FALLBACK_BETA], fallbacks="default", **params)
+        else:
+            ctx = self.client.messages.stream(**params)
+        with ctx as stream:
+            return stream.get_final_message()
 
     def complete_json(self, system: str, user: str, schema: dict) -> dict:
         import anthropic
@@ -78,41 +103,111 @@ class AnthropicLLM:
             messages=[{"role": "user", "content": user}],
             output_config=output_config,
         )
-        try:
-            if model in _FALLBACK_MODELS:
-                stream_ctx = self.client.beta.messages.stream(betas=[_FALLBACK_BETA], fallbacks="default", **params)
-            else:
-                stream_ctx = self.client.messages.stream(**params)
-            with stream_ctx as stream:
-                message = stream.get_final_message()
-        except anthropic.AuthenticationError as e:
-            raise LLMError("Anthropic authentication failed - set an API key in Settings or ANTHROPIC_API_KEY") from e
-        except anthropic.NotFoundError as e:
-            raise LLMError(f"Anthropic model not found: {model}") from e
-        except anthropic.RateLimitError as e:
-            raise LLMError("Anthropic rate limit hit - try again shortly") from e
-        except anthropic.APIStatusError as e:
-            raise LLMError(f"Anthropic API error {e.status_code}: {e.message}") from e
-        except anthropic.APIConnectionError as e:
-            raise LLMError(f"Could not reach the Anthropic API: {e}") from e
-
+        use_fallbacks = model in _FALLBACK_MODELS
+        message = None
+        # Up to 3 attempts, dropping optional features the account/model rejects.
+        for _ in range(3):
+            try:
+                message = self._call(params, use_fallbacks)
+                break
+            except anthropic.BadRequestError as e:
+                msg = str(e.message).lower()
+                if use_fallbacks and "fallback" in msg:
+                    log.warning("Refusal fallbacks rejected, retrying without them: %s", e.message)
+                    use_fallbacks = False
+                    continue
+                if "effort" in msg and "effort" in params["output_config"]:
+                    log.warning("Effort rejected, retrying without it: %s", e.message)
+                    params["output_config"] = {k: v for k, v in params["output_config"].items() if k != "effort"}
+                    continue
+                if ("format" in msg or "schema" in msg) and "format" in params["output_config"]:
+                    log.warning("Structured output rejected, retrying with plain JSON prompt: %s", e.message)
+                    params["output_config"] = {k: v for k, v in params["output_config"].items() if k != "format"}
+                    params["messages"] = [{"role": "user", "content": user + "\n\nReply with only a JSON object "
+                                           "matching this JSON schema:\n" + json.dumps(schema)}]
+                    continue
+                raise LLMError(f"Anthropic rejected the request: {e.message}") from e
+            except anthropic.AuthenticationError as e:
+                raise LLMError("Anthropic authentication failed - set an API key in Settings or ANTHROPIC_API_KEY") from e
+            except anthropic.PermissionDeniedError as e:
+                raise LLMError(f"Anthropic API key lacks access: {e.message}") from e
+            except anthropic.NotFoundError as e:
+                raise LLMError(f"Anthropic model not found: {model}") from e
+            except anthropic.RateLimitError as e:
+                raise LLMError("Anthropic rate limit hit - try again shortly") from e
+            except anthropic.APIStatusError as e:
+                raise LLMError(f"Anthropic API error {e.status_code}: {e.message}") from e
+            except anthropic.APIConnectionError as e:
+                raise LLMError(f"Could not reach the Anthropic API: {e}") from e
+        if message is None:
+            raise LLMError("Anthropic request failed after retries")
         if message.stop_reason == "refusal":
             raise LLMError("Claude declined to analyze this transcript")
         if message.stop_reason == "max_tokens":
-            raise LLMError("Claude's answer was cut off (max_tokens); lower max clips or enable chunking")
+            raise LLMError("Claude's answer was cut off (max_tokens); lower max clips")
         text = next((b.text for b in message.content if b.type == "text"), "")
         return extract_json(text)
 
 
+class OllamaLLM:
+    output_reserve = 3000
+
+    def __init__(self, cfg: LLMConfig):
+        import httpx
+
+        self.cfg = cfg
+        self.context_tokens = max(2048, cfg.ollama_num_ctx)
+        self.base = cfg.ollama_base_url.rstrip("/").removesuffix("/v1")
+        self.http = httpx.Client(timeout=httpx.Timeout(3600, connect=10))
+
+    def list_models(self) -> list[str]:
+        import httpx
+
+        try:
+            resp = self.http.get(f"{self.base}/api/tags")
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise LLMError(f"Could not reach Ollama at {self.base} - is it running? ({e})") from e
+        return [m.get("name", "") for m in resp.json().get("models", [])]
+
+    def complete_json(self, system: str, user: str, schema: dict) -> dict:
+        import httpx
+
+        body = {
+            "model": self.cfg.ollama_model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "stream": False,
+            "format": schema,
+            "options": {"num_ctx": self.context_tokens, "temperature": self.cfg.temperature},
+        }
+        try:
+            resp = self.http.post(f"{self.base}/api/chat", json=body)
+        except httpx.HTTPError as e:
+            raise LLMError(f"Could not reach Ollama at {self.base} - is it running? ({e})") from e
+        if resp.status_code == 404:
+            raise LLMError(f"Ollama model '{self.cfg.ollama_model}' not found - run: ollama pull {self.cfg.ollama_model}")
+        if resp.status_code >= 400:
+            raise LLMError(f"Ollama error {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        used = data.get("prompt_eval_count") or 0
+        if used and used >= self.context_tokens - 64:
+            log.warning("Ollama prompt (%s tokens) filled the %s-token context; input may be truncated",
+                        used, self.context_tokens)
+        return extract_json((data.get("message") or {}).get("content", ""))
+
+
 class OpenAICompatLLM:
+    output_reserve = 3000
+
     def __init__(self, cfg: LLMConfig):
         from openai import OpenAI
 
         self.cfg = cfg
+        self.context_tokens = max(2048, cfg.openai_context_tokens)
         self.client = OpenAI(
             base_url=cfg.openai_base_url or None,
             api_key=cfg.openai_api_key or os.environ.get("OPENAI_API_KEY") or "not-needed",
-            timeout=1800,
+            timeout=3600,
             max_retries=2,
         )
 
@@ -125,7 +220,7 @@ class OpenAICompatLLM:
              + json.dumps(schema)},
         ]
         formats = [
-            {"type": "json_schema", "json_schema": {"name": "clips", "schema": schema}},
+            {"type": "json_schema", "json_schema": {"name": "result", "schema": schema}},
             {"type": "json_object"},
             None,
         ]
@@ -152,6 +247,8 @@ class OpenAICompatLLM:
 def get_llm(cfg: LLMConfig) -> LLMClient:
     if cfg.provider == "anthropic":
         return AnthropicLLM(cfg)
+    if cfg.provider == "ollama":
+        return OllamaLLM(cfg)
     if cfg.provider == "openai_compatible":
         return OpenAICompatLLM(cfg)
     raise LLMError(f"Unknown LLM provider: {cfg.provider}")

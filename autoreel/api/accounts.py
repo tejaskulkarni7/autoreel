@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from ..config import get_server_settings
-from ..db import Account, PublishJob, get_session, kv_get, kv_set, load_config, utcnow
+from ..db import Account, Clip, PublishJob, get_session, kv_get, kv_set, load_config, utcnow
 from ..publishers import PLATFORMS, PublishError, get_publisher
 from .common import account_out, get_or_404
 
@@ -28,7 +28,8 @@ def _base_url(request: Request) -> str:
 
 
 def youtube_redirect_uri(request: Request) -> str:
-    return f"{_base_url(request)}/api/oauth/youtube/callback"
+    public = get_server_settings().public_base_url.rstrip("/")
+    return f"{public or _base_url(request)}/api/oauth/youtube/callback"
 
 
 def tiktok_redirect_uri() -> str:
@@ -127,6 +128,27 @@ def delete_account(account_id: str, session: Session = Depends(get_session)):
 
         cookies_path(account_id).unlink(missing_ok=True)
     return {"ok": True}
+
+
+class TestPublishRequest(BaseModel):
+    clip_id: str | None = None
+
+
+@router.post("/api/accounts/{account_id}/test-publish")
+def test_publish(account_id: str, req: TestPublishRequest, session: Session = Depends(get_session)):
+    """Queue a private/test post of one clip to verify the account end to end."""
+    acct = get_or_404(session, Account, account_id)
+    if req.clip_id:
+        clip = get_or_404(session, Clip, req.clip_id)
+    else:
+        clip = session.exec(select(Clip).where(Clip.status == "ready").order_by(Clip.created_at.desc())).first()
+    if clip is None or clip.status != "ready" or not clip.file_path:
+        raise HTTPException(400, "No rendered clip available yet - process a video first")
+    job = PublishJob(batch_id="test", clip_id=clip.id, account_id=acct.id, platform=acct.platform,
+                     scheduled_at=utcnow(), test=True)
+    session.add(job)
+    session.commit()
+    return {"job_id": job.id, "clip_title": clip.title}
 
 
 @router.post("/api/accounts/{account_id}/test")

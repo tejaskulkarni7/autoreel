@@ -57,7 +57,8 @@ def video_out(v: Video, clip_count: int = 0, ready_count: int = 0, task: Task | 
         "id": v.id, "title": v.title, "source_type": v.source_type, "source_url": v.source_url,
         "filename": v.filename, "duration": v.duration, "width": v.width, "height": v.height, "fps": v.fps,
         "size_bytes": v.size_bytes, "language": v.language, "status": v.status, "stage": v.stage,
-        "progress": v.progress, "error": v.error, "clip_count": clip_count, "ready_clip_count": ready_count,
+        "progress": v.progress, "error": v.error, "source_deleted": v.source_deleted,
+        "clip_count": clip_count, "ready_clip_count": ready_count,
         "source_url_media": media_url(v.path), "task": task_out(task), "thumb_url": thumb_url,
         "created_at": iso(v.created_at), "updated_at": iso(v.updated_at),
     }
@@ -78,6 +79,7 @@ def job_out(j: PublishJob, clip: Clip | None = None, account: Account | None = N
         "id": j.id, "batch_id": j.batch_id, "clip_id": j.clip_id, "account_id": j.account_id,
         "platform": j.platform, "scheduled_at": iso(j.scheduled_at), "status": j.status, "attempts": j.attempts,
         "external_id": j.external_id, "url": j.url, "error": j.error, "created_at": iso(j.created_at),
+        "test": j.test,
         "published_at": iso(j.published_at),
         "clip": {"title": clip.title, "thumb_url": media_url(clip.thumb_path, clip.render_version),
                  "video_id": clip.video_id, "score": clip.score} if clip else None,

@@ -86,6 +86,12 @@ def process_video(task: Task, report: Reporter) -> None:
         video = s.get(Video, task.video_id)
     if video is None or not video.path:
         raise RuntimeError("Video not found")
+    if video.source_deleted or not Path(video.path).exists():
+        raise RuntimeError("The source video was deleted by the storage cleanup - upload it again to regenerate")
+    from ..cleanup import free_gb
+
+    if free_gb() < cfg.storage.min_free_gb:
+        raise RuntimeError(f"Less than {cfg.storage.min_free_gb:g} GB free on the data disk")
     update_row(Video, video.id, status="processing", error=None)
     vdir = video_dir(video.id)
     vdir.mkdir(parents=True, exist_ok=True)
@@ -163,6 +169,9 @@ def render_single_clip(task: Task, report: Reporter) -> None:
         video = s.get(Video, clip.video_id) if clip else None
     if clip is None or video is None:
         raise RuntimeError("Clip not found")
+    if video.source_deleted or not video.path or not Path(video.path).exists():
+        update_row(Clip, clip.id, status="ready" if clip.file_path else "failed")
+        raise RuntimeError("The source video was deleted by the storage cleanup - can't re-render")
     transcript = load_transcript(video_dir(video.id) / "transcript.json")
     words = flatten_words(transcript)
     report("render", 0.0, "Re-rendering clip", force=True)
@@ -204,6 +213,10 @@ def download_video(task: Task, report: Reporter) -> None:
         raise RuntimeError("Download finished but no video file was found")
     path = files[0]
     meta = probe(path)
+    max_minutes = load_config().storage.max_video_minutes
+    if meta.duration > max_minutes * 60:
+        path.unlink(missing_ok=True)
+        raise RuntimeError(f"Video is {meta.duration / 60:.0f} min long; the limit is {max_minutes} min")
     title = (task.options or {}).get("title") or info.get("title") or video.title
     update_row(Video, video.id, path=str(path), filename=path.name, title=title, duration=meta.duration,
                width=meta.width, height=meta.height, fps=meta.fps, size_bytes=path.stat().st_size,

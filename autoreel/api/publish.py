@@ -73,7 +73,7 @@ def schedule(req: PublishRequest, session: Session = Depends(get_session)):
     existing = {
         (j.clip_id, j.account_id)
         for j in session.exec(select(PublishJob).where(
-            PublishJob.clip_id.in_([c.id for c in clips]),
+            PublishJob.clip_id.in_([c.id for c in clips]), PublishJob.test.is_(False),
             PublishJob.status.in_(["scheduled", "running", "published"]))).all()
     }
     interval = cfg.publishing.interval_minutes if req.interval_minutes is None else max(0.0, req.interval_minutes)
